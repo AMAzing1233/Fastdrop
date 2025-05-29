@@ -1,5 +1,5 @@
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
-use btleplug::platform::{Manager, Peripheral};
+use btleplug::platform::Manager;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time;

@@ -4,15 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-btleplug = "0.11"
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
-windows = { version = "0.61", features = [
-    "Devices_Bluetooth",
-    "Devices_Bluetooth_Advertisement",
-    "Devices_Enumeration",
-    "Foundation",
-    "Foundation_Collections",
-    "Storage_Streams"
-]}
-windows-future = "0.2.0"
+btleplug = "0.11.7"
+tokio = { version = "1.44.1", features = ["full"] }
+uuid = { version = "1.16.0", features = ["v4"] }
+ble-peripheral-rust = "0.2.0"
