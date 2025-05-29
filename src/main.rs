@@ -1,5 +1,5 @@
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
-use btleplug::platform::{Manager, Peripheral};
+use btleplug::platform::Manager;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time;
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .as_ref()
             .and_then(|p| p.local_name.clone())
             .unwrap_or_else(|| "Unknown".to_string());
-
+    
         println!("Device {}: {} - {}", i+1, address, name);
 
         // Print detailed information if available
