@@ -60,15 +60,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .filter_map(|s| Uuid::parse_str(s).ok())
         .collect();
 
+    println!("🔎 Filtering for Fastdrop devices...");
+    println!("   Looking for UUIDs:");
+    for uuid in &target_uuids {
+        println!("      - {}", uuid);
+    }
+    println!();
+
     let mut fastdrop_devices = Vec::new();
     for p in adapter.peripherals().await? {
         if let Some(props) = p.properties().await? {
-            // Check if device has any of our service UUIDs
-            if target_uuids
+            // Debug: print all discovered devices
+            let name = props.local_name.as_deref().unwrap_or("Unknown");
+            let has_service = target_uuids
                 .iter()
-                .any(|uuid| props.services.contains(uuid))
-                && props.local_name.is_some()
-            {
+                .any(|uuid| props.services.contains(uuid));
+            
+            if has_service {
+                println!("✓ Found Fastdrop device: {} ({})", name, p.address());
                 fastdrop_devices.push(p);
             }
         }
@@ -76,16 +85,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if fastdrop_devices.is_empty() {
         println!("❌ No Fastdrop devices found");
+        println!("   Make sure the sender is running and advertising");
         return Ok(());
     }
 
-    println!("✅ Found {} Fastdrop device(s):", fastdrop_devices.len());
+    println!("\n✅ Found {} Fastdrop device(s):\n", fastdrop_devices.len());
     for (i, p) in fastdrop_devices.iter().enumerate() {
         print_device_summary(i, p).await;
     }
 
     /* 4. User selection */
-    print!("\n📱 Select device number: ");
+    print!("\n📱 Select device number (1-{}): ", fastdrop_devices.len());
     io::stdout().flush()?;
     let mut buf = String::new();
     io::stdin().read_line(&mut buf)?;
@@ -108,22 +118,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
     peripheral.discover_services().await?;
     println!("✅ Connected\n");
 
+    // Debug: List all discovered services and characteristics
+    println!("🔍 Discovered services:");
+    for service in peripheral.services() {
+        println!("   Service: {}", service.uuid);
+        for ch in peripheral.characteristics() {
+            if ch.service_uuid == service.uuid {
+                println!("      Char: {}", ch.uuid);
+            }
+        }
+    }
+    println!();
+
     // Try to find characteristic from any of the UUIDs
     let char_uuids: Vec<Uuid> = ALL_CHAR_UUIDS
         .iter()
         .filter_map(|s| Uuid::parse_str(s).ok())
         .collect();
 
+    println!("🔎 Looking for Fastdrop characteristics:");
+    for uuid in &char_uuids {
+        println!("   - {}", uuid);
+    }
+    println!();
+
     let mut ticket_data = None;
     for uuid in &char_uuids {
         if let Some(ch) = peripheral.characteristics().iter().find(|c| c.uuid == *uuid) {
+            println!("✓ Found matching characteristic: {}", uuid);
             ticket_data = Some(peripheral.read(ch).await?);
-            println!("📥 Read session ticket from characteristic {}", uuid);
+            println!("📥 Read {} bytes from characteristic", ticket_data.as_ref().unwrap().len());
             break;
         }
     }
 
-    let ticket_data = ticket_data.ok_or("No Fastdrop characteristic found")?;
+    if ticket_data.is_none() {
+        eprintln!("❌ No Fastdrop characteristic found among discovered characteristics");
+        peripheral.disconnect().await?;
+        return Ok(());
+    }
+
+    let ticket_data = ticket_data.unwrap();
     let ticket: SessionTicket = from_slice(&ticket_data)?;
 
     println!("🎫 Session Ticket:");
