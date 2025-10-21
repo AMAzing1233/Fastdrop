@@ -92,6 +92,22 @@ pub struct FileList {
     
     /// Total size of all files combined
     pub total_size: u64,
+    
+    /// Actual file contents (name -> data)
+    pub file_data: Vec<FileData>,
+}
+
+/// File content data
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FileData {
+    /// File index in the files list
+    pub index: usize,
+    
+    /// File name
+    pub name: String,
+    
+    /// File contents
+    pub data: Vec<u8>,
 }
 
 /* ========== Transfer Protocol Messages ========== */

@@ -76,7 +76,11 @@ pub async fn analyze_files<P: AsRef<Path>>(
         TransportProtocol::Tcp
     };
 
-    let file_list = FileList { files, total_size };
+    let file_list = FileList { 
+        files, 
+        total_size,
+        file_data: Vec::new(), // Will be filled by sender
+    };
 
     println!(
         "📊 Analysis: {} files, {} bytes total → Using {:?}",

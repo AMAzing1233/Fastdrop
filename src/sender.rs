@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     println!();
 
     // 2. Analyze files and determine protocol
-    let (protocol, file_list) = transfer::analyze_files(&file_paths)
+    let (protocol, mut file_list) = transfer::analyze_files(&file_paths)
         .await
         .context("Failed to analyze files")?;
 
@@ -51,6 +51,29 @@ async fn main() -> Result<()> {
         transfer::format_bytes(file_list.total_size),
         file_list.total_size
     );
+
+    // 2b. Read file contents
+    println!("📖 Reading file contents...");
+    for (idx, path) in file_paths.iter().enumerate() {
+        match tokio::fs::read(path).await {
+            Ok(data) => {
+                let file_data = protocol::FileData {
+                    index: idx,
+                    name: path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    data,
+                };
+                file_list.file_data.push(file_data);
+                println!("   ✓ Read {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("   ✗ Failed to read {}: {}", path.display(), e);
+            }
+        }
+    }
+    println!();
 
     // 3. Setup libp2p swarm
     let keypair = Keypair::generate_ed25519();

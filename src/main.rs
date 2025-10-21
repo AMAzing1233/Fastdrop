@@ -227,34 +227,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         );
                         println!();
 
-                        // Prepare to receive files
-                        for (idx, file_meta) in response.file_list.files.iter().enumerate() {
-                            println!("   {}. {} ({})", 
-                                idx + 1,
-                                file_meta.name,
-                                transfer::format_bytes(file_meta.size)
-                            );
-
-                            // Create receiver for each file
-                            let output_path = PathBuf::from(&file_meta.name);
-                            match transfer::FileReceiver::new(output_path, idx).await {
-                                Ok(receiver) => {
-                                    file_receivers.insert(idx, receiver);
+                        // Write files to disk
+                        for file_data in &response.file_list.file_data {
+                            println!("   📄 Writing: {}", file_data.name);
+                            
+                            let output_path = PathBuf::from(&file_data.name);
+                            
+                            // Create parent directories if needed
+                            if let Some(parent) = output_path.parent() {
+                                tokio::fs::create_dir_all(parent).await?;
+                            }
+                            
+                            match tokio::fs::write(&output_path, &file_data.data).await {
+                                Ok(_) => {
+                                    println!("      ✅ Wrote {} bytes to {}", 
+                                        file_data.data.len(), 
+                                        output_path.display()
+                                    );
                                 }
                                 Err(e) => {
-                                    eprintln!("   ❌ Failed to create receiver: {}", e);
+                                    eprintln!("      ❌ Failed to write {}: {}", 
+                                        output_path.display(), 
+                                        e
+                                    );
                                 }
                             }
                         }
 
-                        println!("\n📥 Ready to receive files...");
-                        // In full implementation, would now receive chunks via streams
+                        println!("\n✅ Transfer complete!");
+                        println!("   Received {} file(s)\n", response.file_list.file_data.len());
                         
-                        // For now, we demonstrate the structure
-                        println!("✅ Transfer setup complete");
-                        println!("   (Full chunk transfer implementation pending)\n");
-                        
-                        // Exit after receiving file list
+                        // Exit after receiving files
                         break;
                     }
                     Message::Request { .. } => {
