@@ -12,7 +12,6 @@ use libp2p::request_response::{Event as RREvent, Message};
 use libp2p::swarm::SwarmEvent;
 use protocol::{SessionTicket, TransferRequest};
 use serde_cbor::from_slice;
-use std::collections::HashMap;
 use std::{
     error::Error,
     io::{self, Write},
@@ -189,7 +188,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     /* 8. Wait for connection and request transfer */
     let mut connected_peer = None;
-    let mut file_receivers: HashMap<usize, transfer::FileReceiver> = HashMap::new();
 
     println!("\n⏳ Waiting for P2P connection...\n");
 
