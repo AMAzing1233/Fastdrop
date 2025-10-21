@@ -7,6 +7,7 @@ mod transfer;
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::Manager;
 use futures::StreamExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use libp2p::identity::Keypair;
 use libp2p::request_response::{Event as RREvent, Message};
 use libp2p::swarm::SwarmEvent;
@@ -225,9 +226,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         );
                         println!();
 
-                        // Write files to disk
+                        // Write files to disk with progress bars
+                        let multi_progress = MultiProgress::new();
+                        let style = ProgressStyle::default_bar()
+                            .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {msg}")
+                            .unwrap()
+                            .progress_chars("#>-");
+
                         for file_data in &response.file_list.file_data {
-                            println!("   📄 Writing: {}", file_data.name);
+                            let pb = multi_progress.add(ProgressBar::new(file_data.data.len() as u64));
+                            pb.set_style(style.clone());
+                            pb.set_message(file_data.name.clone());
                             
                             let output_path = PathBuf::from(&file_data.name);
                             
@@ -238,12 +247,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             
                             match tokio::fs::write(&output_path, &file_data.data).await {
                                 Ok(_) => {
-                                    println!("      ✅ Wrote {} bytes to {}", 
-                                        file_data.data.len(), 
-                                        output_path.display()
-                                    );
+                                    pb.inc(file_data.data.len() as u64);
+                                    pb.finish_with_message(format!("✓ {}", file_data.name));
                                 }
                                 Err(e) => {
+                                    pb.finish_with_message(format!("✗ Failed: {}", e));
                                     eprintln!("      ❌ Failed to write {}: {}", 
                                         output_path.display(), 
                                         e

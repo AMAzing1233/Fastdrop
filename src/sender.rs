@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use ble_peripheral_rust::gatt::{characteristic, properties, service};
 use ble_peripheral_rust::{Peripheral, PeripheralImpl};
 use futures::StreamExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use libp2p::identity::Keypair;
 use libp2p::request_response::{Event as RREvent, Message};
 use libp2p::swarm::SwarmEvent;
@@ -52,23 +53,56 @@ async fn main() -> Result<()> {
         file_list.total_size
     );
 
-    // 2b. Read file contents
-    println!("📖 Reading file contents...");
+    // Check size limits
+    if file_list.total_size > protocol::MAX_TOTAL_SIZE {
+        eprintln!(
+            "❌ Error: Total size {} exceeds limit of {}",
+            transfer::format_bytes(file_list.total_size),
+            transfer::format_bytes(protocol::MAX_TOTAL_SIZE)
+        );
+        std::process::exit(1);
+    }
+
+    for file_meta in &file_list.files {
+        if file_meta.size > protocol::MAX_FILE_SIZE {
+            eprintln!(
+                "❌ Error: File '{}' size {} exceeds limit of {}",
+                file_meta.name,
+                transfer::format_bytes(file_meta.size),
+                transfer::format_bytes(protocol::MAX_FILE_SIZE)
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // 2b. Read file contents with progress bars
+    println!("📖 Reading files...\n");
+    
+    let multi_progress = MultiProgress::new();
+    let style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {msg}")
+        .unwrap()
+        .progress_chars("#>-");
+
     for (idx, path) in file_paths.iter().enumerate() {
+        let file_meta = &file_list.files[idx];
+        let pb = multi_progress.add(ProgressBar::new(file_meta.size));
+        pb.set_style(style.clone());
+        pb.set_message(file_meta.name.clone());
+
         match tokio::fs::read(path).await {
             Ok(data) => {
+                pb.inc(data.len() as u64);
                 let file_data = protocol::FileData {
                     index: idx,
-                    name: path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
+                    name: file_meta.name.clone(),
                     data,
                 };
                 file_list.file_data.push(file_data);
-                println!("   ✓ Read {}", path.display());
+                pb.finish_with_message(format!("✓ {}", file_meta.name));
             }
             Err(e) => {
+                pb.finish_with_message(format!("✗ Failed: {}", e));
                 eprintln!("   ✗ Failed to read {}: {}", path.display(), e);
             }
         }
