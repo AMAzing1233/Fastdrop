@@ -13,10 +13,12 @@ dependencies = [
  "bytes",
  "futures",
  "libp2p",
+ "rand 0.8.5",
  "serde",
  "serde-big-array",
  "serde_cbor",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]
