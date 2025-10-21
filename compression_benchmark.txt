@@ -1,0 +1,2 @@
+Compress_score: 81.83
+Decompress_score: 151.23
