@@ -15,17 +15,6 @@ pub const QUIC_CHAR_UUID: &str = "ABCDEFAB-CDEF-1234-5678-1234567890AB";
 pub const TCP_SERVICE_UUID: &str = "87654321-4321-8765-4321-FEDCBA9876543";
 pub const TCP_CHAR_UUID: &str = "BAFEDCBA-FEDC-4321-8765-BA0987654321";
 
-/* ========== File Size Limits ========== */
-
-/// Maximum size for a single file (100 MB)
-pub const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
-
-/// Maximum total transfer size (500 MB)
-pub const MAX_TOTAL_SIZE: u64 = 500 * 1024 * 1024;
-
-/// Chunk size for reading files (64 KB)
-pub const CHUNK_SIZE: usize = 64 * 1024;
-
 /* ========== Transport Protocol Selection ========== */
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
