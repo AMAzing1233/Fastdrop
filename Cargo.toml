@@ -4,7 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-btleplug = "0.11.7"
-tokio = { version = "1.44.1", features = ["full"] }
-uuid = { version = "1.16.0", features = ["v4"] }
+btleplug = "0.11.8"
+tokio = { version = "1.48.0", features = ["full"] }
+uuid = { version = "1.18.1", features = ["v4"] }
 ble-peripheral-rust = "0.2.0"
+libp2p = { version = "0.55.0", features = ["yamux", "tcp", "websocket", "noise", "tokio", "request-response", "dns", "cbor", "serde", "quic", "relay"] }
+async-trait = "0.1.89"
+futures = "0.3.31"
+bytes = "1.10.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_cbor = "0.11.2"
+serde_json = "1.0.145"
+serde-big-array = "0.5.1"
+anyhow = "1.0.100"
