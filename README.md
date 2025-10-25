@@ -17,6 +17,7 @@ Then just select your device and IT WORKS!!!
 This should work on all devices, be it Linux, Windows, MAC and any mobile phones
 
 In my testing(On the same network), this app performs around 1.2 - 1.5 times faster due to the newer quic protocol
+
 //Todo
 - Make it more like aidrop (Ie fully offline support)
 
