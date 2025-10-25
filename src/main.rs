@@ -8,8 +8,8 @@ use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::Manager;
 use futures::StreamExt;
 use libp2p::identity::Keypair;
-use libp2p::request_response::{Event as RREvent, Message};
 use libp2p::swarm::SwarmEvent;
+use libp2p::StreamProtocol;
 use protocol::{SessionTicket, TransferRequest};
 use serde_cbor::from_slice;
 use std::{
@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    /* 8. Wait for connection and request transfer */
+    /* 8. Wait for connection and open stream for transfer */
     let mut connected_peer = None;
 
     println!("\n⏳ Waiting for P2P connection...\n");
@@ -197,14 +197,85 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 println!("✅ P2P connection established with {}", peer_id);
                 connected_peer = Some(peer_id);
 
-                // Send transfer request
-                let request = TransferRequest {
-                    request_id: 1,
-                    ready: true,
-                };
+                // Open a stream to the sender
+                println!("📨 Opening stream to send transfer request...");
+                
+                let protocol = StreamProtocol::new(network::TRANSFER_PROTOCOL);
+                let peer_id_copy = peer_id;
+                
+                // Get a fresh control for this connection
+                let mut control = network::get_stream_control(&swarm);
+                
+                // Spawn task to handle stream communication
+                tokio::spawn(async move {
+                    match control.open_stream(peer_id_copy, protocol).await {
+                        Ok(mut stream) => {
+                            println!("✅ Stream opened successfully");
+                            
+                            // Send request
+                            let request = TransferRequest {
+                                request_id: 1,
+                                ready: true,
+                            };
+                            
+                            if let Err(e) = network::write_request(&mut stream, request).await {
+                                eprintln!("❌ Failed to send request: {}", e);
+                                return;
+                            }
+                            
+                            println!("📨 Request sent, waiting for response...");
+                            
+                            // Read response
+                            match network::read_response(&mut stream).await {
+                                Ok(response) => {
+                                    println!("📦 Received file list:");
+                                    println!("   Files: {}", response.file_list.files.len());
+                                    println!(
+                                        "   Total size: {}",
+                                        transfer::format_bytes(response.file_list.total_size)
+                                    );
+                                    println!();
 
-                println!("📨 Sending transfer request...");
-                network::send_request(&mut swarm, peer_id, request);
+                                    // Write files to disk
+                                    for file_data in &response.file_list.file_data {
+                                        println!("   📄 Writing: {}", file_data.name);
+                                        
+                                        let output_path = PathBuf::from(&file_data.name);
+                                        
+                                        // Create parent directories if needed
+                                        if let Some(parent) = output_path.parent() {
+                                            let _ = tokio::fs::create_dir_all(parent).await;
+                                        }
+                                        
+                                        match tokio::fs::write(&output_path, &file_data.data).await {
+                                            Ok(_) => {
+                                                println!("      ✅ Wrote {} bytes to {}", 
+                                                    file_data.data.len(), 
+                                                    output_path.display()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                eprintln!("      ❌ Failed to write {}: {}", 
+                                                    output_path.display(), 
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+
+                                    println!("\n✅ Transfer complete!");
+                                    println!("   Received {} file(s)\n", response.file_list.file_data.len());
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ Failed to read response: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to open stream: {}", e);
+                        }
+                    }
+                });
             }
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 println!("❌ Connection closed with {}: {:?}", peer_id, cause);
@@ -212,64 +283,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     break;
                 }
             }
-            SwarmEvent::Behaviour(network::FileTransferBehaviourEvent::RequestResponse(
-                rr_event,
-            )) => match rr_event {
-                RREvent::Message { message, .. } => match message {
-                    Message::Response { response, .. } => {
-                        println!("📦 Received file list:");
-                        println!("   Files: {}", response.file_list.files.len());
-                        println!(
-                            "   Total size: {}",
-                            transfer::format_bytes(response.file_list.total_size)
-                        );
-                        println!();
-
-                        // Write files to disk
-                        for file_data in &response.file_list.file_data {
-                            println!("   📄 Writing: {}", file_data.name);
-                            
-                            let output_path = PathBuf::from(&file_data.name);
-                            
-                            // Create parent directories if needed
-                            if let Some(parent) = output_path.parent() {
-                                tokio::fs::create_dir_all(parent).await?;
-                            }
-                            
-                            match tokio::fs::write(&output_path, &file_data.data).await {
-                                Ok(_) => {
-                                    println!("      ✅ Wrote {} bytes to {}", 
-                                        file_data.data.len(), 
-                                        output_path.display()
-                                    );
-                                }
-                                Err(e) => {
-                                    eprintln!("      ❌ Failed to write {}: {}", 
-                                        output_path.display(), 
-                                        e
-                                    );
-                                }
-                            }
-                        }
-
-                        println!("\n✅ Transfer complete!");
-                        println!("   Received {} file(s)\n", response.file_list.file_data.len());
-                        
-                        // Exit after receiving files
-                        break;
-                    }
-                    Message::Request { .. } => {
-                        // Receiver doesn't expect requests
-                    }
-                },
-                RREvent::OutboundFailure { error, .. } => {
-                    eprintln!("❌ Request failed: {:?}", error);
-                }
-                RREvent::InboundFailure { error, .. } => {
-                    eprintln!("❌ Inbound failure: {:?}", error);
-                }
-                RREvent::ResponseSent { .. } => {}
-            },
             _ => {}
         }
     }

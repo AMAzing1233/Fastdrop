@@ -2,14 +2,14 @@
 
 use crate::protocol::{TransferRequest, TransferResponse, TransportProtocol};
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     identity::Keypair,
-    noise, request_response,
+    noise,
     swarm::NetworkBehaviour,
-    tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
+    tcp, yamux, Multiaddr, Swarm, SwarmBuilder,
 };
+use libp2p_stream as stream;
 use std::io;
 use std::time::Duration;
 
@@ -17,107 +17,11 @@ use std::time::Duration;
 
 pub const TRANSFER_PROTOCOL: &str = "/fastdrop/transfer/1.0.0";
 
-/* ========== Custom Codec for Request-Response ========== */
-
-#[derive(Clone)]
-pub struct TransferCodec;
-
-#[async_trait]
-impl request_response::Codec for TransferCodec {
-    type Protocol = StreamProtocol;
-    type Request = TransferRequest;
-    type Response = TransferResponse;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        // Read length prefix (4 bytes)
-        let mut len_bytes = [0u8; 4];
-        io.read_exact(&mut len_bytes).await?;
-        let len = u32::from_be_bytes(len_bytes) as usize;
-        
-        // Read data
-        let mut data = vec![0u8; len];
-        io.read_exact(&mut data).await?;
-        
-        serde_cbor::from_slice(&data)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        // Read length prefix (4 bytes)
-        let mut len_bytes = [0u8; 4];
-        io.read_exact(&mut len_bytes).await?;
-        let len = u32::from_be_bytes(len_bytes) as usize;
-        
-        // Read data
-        let mut data = vec![0u8; len];
-        io.read_exact(&mut data).await?;
-        
-        serde_cbor::from_slice(&data)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        req: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        let data = serde_cbor::to_vec(&req)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        
-        // Write length prefix
-        let len = data.len() as u32;
-        io.write_all(&len.to_be_bytes()).await?;
-        
-        // Write data
-        io.write_all(&data).await?;
-        io.flush().await
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        res: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        let data = serde_cbor::to_vec(&res)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        
-        // Write length prefix
-        let len = data.len() as u32;
-        io.write_all(&len.to_be_bytes()).await?;
-        
-        // Write data
-        io.write_all(&data).await?;
-        io.flush().await
-    }
-}
-
 /* ========== Network Behaviour ========== */
 
 #[derive(NetworkBehaviour)]
 pub struct FileTransferBehaviour {
-    pub request_response: request_response::Behaviour<TransferCodec>,
+    pub stream: stream::Behaviour,
 }
 
 /* ========== Swarm Building ========== */
@@ -131,23 +35,8 @@ pub fn build_quic_swarm(keypair: Keypair) -> Result<Swarm<FileTransferBehaviour>
         .with_tokio()
         .with_quic()
         .with_behaviour(|_key| {
-            let protocols = [(
-                StreamProtocol::new(TRANSFER_PROTOCOL),
-                request_response::ProtocolSupport::Full,
-            )];
-            
-            let cfg = request_response::Config::default()
-                .with_request_timeout(Duration::from_secs(300)); // 5 min timeout
-
-            let behaviour = request_response::Behaviour::with_codec(
-                TransferCodec,
-                protocols,
-                cfg,
-            );
-
-            FileTransferBehaviour {
-                request_response: behaviour,
-            }
+            let behaviour = stream::Behaviour::new();
+            FileTransferBehaviour { stream: behaviour }
         })
         .context("Failed to create behaviour")?
         .with_swarm_config(|cfg| {
@@ -172,23 +61,8 @@ pub fn build_tcp_swarm(keypair: Keypair) -> Result<Swarm<FileTransferBehaviour>>
         )
         .context("Failed to configure TCP transport")?
         .with_behaviour(|_key| {
-            let protocols = [(
-                StreamProtocol::new(TRANSFER_PROTOCOL),
-                request_response::ProtocolSupport::Full,
-            )];
-            
-            let cfg = request_response::Config::default()
-                .with_request_timeout(Duration::from_secs(300)); // 5 min timeout
-
-            let behaviour = request_response::Behaviour::with_codec(
-                TransferCodec,
-                protocols,
-                cfg,
-            );
-
-            FileTransferBehaviour {
-                request_response: behaviour,
-            }
+            let behaviour = stream::Behaviour::new();
+            FileTransferBehaviour { stream: behaviour }
         })
         .context("Failed to create behaviour")?
         .with_swarm_config(|cfg| {
@@ -240,29 +114,95 @@ pub fn get_listen_addrs(swarm: &Swarm<FileTransferBehaviour>) -> Vec<Multiaddr> 
     swarm.listeners().cloned().collect()
 }
 
-/// Send a transfer request to a peer
-pub fn send_request(
-    swarm: &mut Swarm<FileTransferBehaviour>,
-    peer: PeerId,
-    request: TransferRequest,
-) -> request_response::OutboundRequestId {
-    swarm
-        .behaviour_mut()
-        .request_response
-        .send_request(&peer, request)
+/// Get stream control for opening/accepting streams
+pub fn get_stream_control(swarm: &Swarm<FileTransferBehaviour>) -> stream::Control {
+    swarm.behaviour().stream.new_control()
 }
 
-/// Send a transfer response
-pub fn send_response(
-    swarm: &mut Swarm<FileTransferBehaviour>,
-    channel: request_response::ResponseChannel<TransferResponse>,
-    response: TransferResponse,
-) -> Result<()> {
-    swarm
-        .behaviour_mut()
-        .request_response
-        .send_response(channel, response)
-        .map_err(|_| anyhow::anyhow!("Failed to send response"))
+/// Write a request to a stream
+pub async fn write_request<T>(stream: &mut T, request: TransferRequest) -> Result<()>
+where
+    T: AsyncWrite + Unpin,
+{
+    let data = serde_cbor::to_vec(&request)
+        .context("Failed to serialize request")?;
+    
+    // Write length prefix
+    let len = data.len() as u32;
+    stream.write_all(&len.to_be_bytes()).await
+        .context("Failed to write length")?;
+    
+    // Write data
+    stream.write_all(&data).await
+        .context("Failed to write request")?;
+    
+    stream.flush().await
+        .context("Failed to flush stream")?;
+    
+    Ok(())
+}
+
+/// Read a request from a stream
+pub async fn read_request<T>(stream: &mut T) -> Result<TransferRequest>
+where
+    T: AsyncRead + Unpin,
+{
+    // Read length prefix
+    let mut len_bytes = [0u8; 4];
+    stream.read_exact(&mut len_bytes).await
+        .context("Failed to read length")?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    
+    // Read data
+    let mut data = vec![0u8; len];
+    stream.read_exact(&mut data).await
+        .context("Failed to read request")?;
+    
+    serde_cbor::from_slice(&data)
+        .context("Failed to deserialize request")
+}
+
+/// Write a response to a stream
+pub async fn write_response<T>(stream: &mut T, response: TransferResponse) -> Result<()>
+where
+    T: AsyncWrite + Unpin,
+{
+    let data = serde_cbor::to_vec(&response)
+        .context("Failed to serialize response")?;
+    
+    // Write length prefix
+    let len = data.len() as u32;
+    stream.write_all(&len.to_be_bytes()).await
+        .context("Failed to write length")?;
+    
+    // Write data
+    stream.write_all(&data).await
+        .context("Failed to write response")?;
+    
+    stream.flush().await
+        .context("Failed to flush stream")?;
+    
+    Ok(())
+}
+
+/// Read a response from a stream
+pub async fn read_response<T>(stream: &mut T) -> Result<TransferResponse>
+where
+    T: AsyncRead + Unpin,
+{
+    // Read length prefix
+    let mut len_bytes = [0u8; 4];
+    stream.read_exact(&mut len_bytes).await
+        .context("Failed to read length")?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    
+    // Read data
+    let mut data = vec![0u8; len];
+    stream.read_exact(&mut data).await
+        .context("Failed to read response")?;
+    
+    serde_cbor::from_slice(&data)
+        .context("Failed to deserialize response")
 }
 
 /* ========== Chunk Transfer via Stream ========== */

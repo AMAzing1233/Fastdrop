@@ -9,9 +9,8 @@ use ble_peripheral_rust::gatt::{characteristic, properties, service};
 use ble_peripheral_rust::{Peripheral, PeripheralImpl};
 use futures::StreamExt;
 use libp2p::identity::Keypair;
-use libp2p::request_response::{Event as RREvent, Message};
 use libp2p::swarm::SwarmEvent;
-use libp2p::PeerId;
+use libp2p::{PeerId, StreamProtocol};
 use protocol::{SessionTicket, TransferResponse};
 use std::collections::HashMap;
 use std::env;
@@ -192,7 +191,53 @@ async fn main() -> Result<()> {
     println!("📦 Waiting for transfer requests...");
     println!("   (Press Ctrl+C to cancel)\n");
 
-    // 10. Handle P2P connection and file transfer
+    // 10. Setup stream acceptor
+    let mut control = network::get_stream_control(&swarm);
+    let protocol = StreamProtocol::new(network::TRANSFER_PROTOCOL);
+    let mut incoming = control.accept(protocol)
+        .context("Failed to accept incoming streams")?;
+
+    // Clone file_list for the stream handler task
+    let file_list_clone = file_list.clone();
+    
+    // Spawn task to handle incoming streams
+    tokio::spawn(async move {
+        while let Some((peer, mut stream)) = incoming.next().await {
+            println!("📨 Received stream from {}", peer);
+            
+            let file_list = file_list_clone.clone();
+            
+            tokio::spawn(async move {
+                // Read request
+                match network::read_request(&mut stream).await {
+                    Ok(request) => {
+                        println!("📨 Transfer request from {}", peer);
+                        println!("   Request ID: {}", request.request_id);
+                        
+                        if request.ready {
+                            let response = TransferResponse {
+                                request_id: request.request_id,
+                                file_list,
+                                accepted: true,
+                            };
+                            
+                            // Send response
+                            if let Err(e) = network::write_response(&mut stream, response).await {
+                                eprintln!("❌ Failed to send response: {}", e);
+                            } else {
+                                println!("✅ Sent file list to receiver");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to read request: {}", e);
+                    }
+                }
+            });
+        }
+    });
+
+    // 11. Handle P2P connection events
     let mut pending_transfers: HashMap<PeerId, Vec<PathBuf>> = HashMap::new();
 
     loop {
@@ -210,47 +255,6 @@ async fn main() -> Result<()> {
                         println!("❌ Connection closed with {}: {:?}", peer_id, cause);
                         pending_transfers.remove(&peer_id);
                     }
-                    SwarmEvent::Behaviour(network::FileTransferBehaviourEvent::RequestResponse(rr_event)) => {
-                        match rr_event {
-                            RREvent::Message { peer, message, .. } => {
-                                match message {
-                                    Message::Request { request, channel, .. } => {
-                                        println!("📨 Transfer request from {}", peer);
-                                        println!("   Request ID: {}", request.request_id);
-                                        
-                                        if request.ready {
-                                            let response = TransferResponse {
-                                                request_id: request.request_id,
-                                                file_list: file_list.clone(),
-                                                accepted: true,
-                                            };
-                                            
-                                            if let Err(e) = network::send_response(&mut swarm, channel, response) {
-                                                eprintln!("❌ Failed to send response: {}", e);
-                                            } else {
-                                                println!("✅ Sent file list to receiver");
-                                                
-                                                // Start sending files
-                                                if let Some(paths) = pending_transfers.get(&peer) {
-                                                    tokio::spawn(send_files_task(peer, paths.clone()));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Message::Response { .. } => {
-                                        // Sender doesn't expect responses
-                                    }
-                                }
-                            }
-                            RREvent::OutboundFailure { error, .. } => {
-                                eprintln!("❌ Outbound failure: {:?}", error);
-                            }
-                            RREvent::InboundFailure { error, .. } => {
-                                eprintln!("❌ Inbound failure: {:?}", error);
-                            }
-                            _ => {}
-                        }
-                    }
                     _ => {}
                 }
             }
@@ -263,26 +267,4 @@ async fn main() -> Result<()> {
 
     println!("👋 Goodbye!");
     Ok(())
-}
-
-/// Task to send files (spawned as separate task)
-async fn send_files_task(peer: PeerId, file_paths: Vec<PathBuf>) {
-    println!("\n📤 Starting file transfer to {}", peer);
-    
-    for (idx, path) in file_paths.iter().enumerate() {
-        println!("📄 Sending file {}/{}: {}", idx + 1, file_paths.len(), path.display());
-        
-        match transfer::send_file(path, idx).await {
-            Ok(chunks) => {
-                println!("   ✅ {} chunks prepared", chunks.len());
-                // In a full implementation, we'd send these chunks over a stream
-                // For now, this demonstrates the flow
-            }
-            Err(e) => {
-                eprintln!("   ❌ Failed to prepare file: {}", e);
-            }
-        }
-    }
-    
-    println!("✅ File transfer complete to {}\n", peer);
 }
