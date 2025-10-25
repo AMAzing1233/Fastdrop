@@ -184,6 +184,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("📞 Dialing {}", addr);
         if let Err(e) = swarm.dial(addr.clone()) {
             eprintln!("   ⚠️  Failed: {}", e);
+        } else {
+            println!("   ✅ Dial initiated successfully");
         }
     }
 
@@ -191,11 +193,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut connected_peer = None;
 
     println!("\n⏳ Waiting for P2P connection...\n");
+    println!("🔍 Debug: Entering event loop...");
 
     loop {
+        println!("🔍 Debug: Waiting for next swarm event...");
         match swarm.select_next_some().await {
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                 println!("✅ P2P connection established with {}", peer_id);
+                println!("   Endpoint: {:?}", endpoint);
                 connected_peer = Some(peer_id);
 
                 // Open a stream to the sender
@@ -209,6 +214,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 
                 // Spawn task to handle stream communication
                 tokio::spawn(async move {
+                    println!("🔍 Debug: Spawned stream handler task");
+                    println!("🔍 Debug: Attempting to open stream to {}", peer_id_copy);
+                    
                     match control.open_stream(peer_id_copy, protocol).await {
                         Ok(mut stream) => {
                             println!("✅ Stream opened successfully");
@@ -219,6 +227,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 ready: true,
                             };
                             
+                            println!("🔍 Debug: Sending transfer request...");
                             if let Err(e) = network::write_request(&mut stream, request).await {
                                 eprintln!("❌ Failed to send request: {}", e);
                                 return;
@@ -326,7 +335,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     break;
                 }
             }
-            _ => {}
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                eprintln!("❌ Outgoing connection error to {:?}: {}", peer_id, error);
+            }
+            SwarmEvent::IncomingConnectionError { send_back_addr, error, .. } => {
+                eprintln!("❌ Incoming connection error from {:?}: {}", send_back_addr, error);
+            }
+            SwarmEvent::Dialing { peer_id, .. } => {
+                println!("📞 Dialing peer: {:?}", peer_id);
+            }
+            event => {
+                println!("🔍 Debug: Received event: {:?}", event);
+            }
         }
     }
 

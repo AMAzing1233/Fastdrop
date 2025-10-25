@@ -172,17 +172,24 @@ async fn main() -> Result<()> {
     println!("   (Press Ctrl+C to cancel)\n");
 
     // 10. Setup stream acceptor
+    println!("🔍 Debug: Setting up stream acceptor...");
     let mut control = network::get_stream_control(&swarm);
     let protocol_stream = StreamProtocol::new(network::TRANSFER_PROTOCOL);
+    println!("🔍 Debug: Protocol: {}", network::TRANSFER_PROTOCOL);
+    
     let mut incoming = control.accept(protocol_stream)
         .context("Failed to accept incoming streams")?;
+    
+    println!("✅ Stream acceptor configured");
 
     // Clone data for the stream handler task
     let file_list_clone = file_list.clone();
     let file_paths_clone = file_paths.clone();
     
     // Spawn task to handle incoming streams
+    println!("🔍 Debug: Spawning incoming stream handler...");
     tokio::spawn(async move {
+        println!("🔍 Debug: Stream handler task started, waiting for incoming streams...");
         while let Some((peer, mut stream)) = incoming.next().await {
             println!("📨 Received stream from {}", peer);
             
@@ -190,13 +197,16 @@ async fn main() -> Result<()> {
             let file_paths = file_paths_clone.clone();
             
             tokio::spawn(async move {
+                println!("🔍 Debug: Spawned handler for stream from {}", peer);
                 // Read request
+                println!("🔍 Debug: Reading request from stream...");
                 match network::read_request(&mut stream).await {
                     Ok(request) => {
                         println!("📨 Transfer request from {}", peer);
                         println!("   Request ID: {}", request.request_id);
                         
                         if request.ready {
+                            println!("🔍 Debug: Creating transfer response...");
                             let response = TransferResponse {
                                 request_id: request.request_id,
                                 file_list: file_list.clone(),
@@ -204,6 +214,7 @@ async fn main() -> Result<()> {
                             };
                             
                             // Send response with metadata
+                            println!("🔍 Debug: Sending response with metadata...");
                             if let Err(e) = network::write_response(&mut stream, response).await {
                                 eprintln!("❌ Failed to send response: {}", e);
                                 return;
@@ -253,22 +264,36 @@ async fn main() -> Result<()> {
     // 11. Handle P2P connection events
     let mut pending_transfers: HashMap<PeerId, Vec<PathBuf>> = HashMap::new();
 
+    println!("🔍 Debug: Entering main event loop...");
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
+                println!("🔍 Debug: Received swarm event: {:?}", std::mem::discriminant(&event));
                 match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         println!("🎧 New listen address: {}", address);
                     }
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         println!("🤝 Connection established with {}", peer_id);
+                        println!("   Endpoint: {:?}", endpoint);
                         pending_transfers.insert(peer_id, file_paths.clone());
                     }
                     SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                         println!("❌ Connection closed with {}: {:?}", peer_id, cause);
                         pending_transfers.remove(&peer_id);
                     }
-                    _ => {}
+                    SwarmEvent::IncomingConnection { send_back_addr, .. } => {
+                        println!("📥 Incoming connection from: {:?}", send_back_addr);
+                    }
+                    SwarmEvent::IncomingConnectionError { send_back_addr, error, .. } => {
+                        eprintln!("❌ Incoming connection error from {:?}: {}", send_back_addr, error);
+                    }
+                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                        eprintln!("❌ Outgoing connection error to {:?}: {}", peer_id, error);
+                    }
+                    event => {
+                        println!("🔍 Debug: Other event: {:?}", event);
+                    }
                 }
             }
             _ = signal::ctrl_c() => {

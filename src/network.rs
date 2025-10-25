@@ -116,6 +116,7 @@ pub fn get_listen_addrs(swarm: &Swarm<FileTransferBehaviour>) -> Vec<Multiaddr> 
 
 /// Get stream control for opening/accepting streams
 pub fn get_stream_control(swarm: &Swarm<FileTransferBehaviour>) -> stream::Control {
+    println!("🔍 Debug: Creating new stream control");
     swarm.behaviour().stream.new_control()
 }
 
@@ -124,9 +125,11 @@ pub async fn write_request<T>(stream: &mut T, request: TransferRequest) -> Resul
 where
     T: AsyncWrite + Unpin,
 {
+    println!("🔍 Debug: Serializing request...");
     let data = serde_cbor::to_vec(&request)
         .context("Failed to serialize request")?;
     
+    println!("🔍 Debug: Writing request ({} bytes)...", data.len());
     // Write length prefix
     let len = data.len() as u32;
     stream.write_all(&len.to_be_bytes()).await
@@ -139,6 +142,7 @@ where
     stream.flush().await
         .context("Failed to flush stream")?;
     
+    println!("🔍 Debug: Request written successfully");
     Ok(())
 }
 
@@ -147,17 +151,20 @@ pub async fn read_request<T>(stream: &mut T) -> Result<TransferRequest>
 where
     T: AsyncRead + Unpin,
 {
+    println!("🔍 Debug: Reading request length...");
     // Read length prefix
     let mut len_bytes = [0u8; 4];
     stream.read_exact(&mut len_bytes).await
         .context("Failed to read length")?;
     let len = u32::from_be_bytes(len_bytes) as usize;
     
+    println!("🔍 Debug: Reading request data ({} bytes)...", len);
     // Read data
     let mut data = vec![0u8; len];
     stream.read_exact(&mut data).await
         .context("Failed to read request")?;
     
+    println!("🔍 Debug: Deserializing request...");
     serde_cbor::from_slice(&data)
         .context("Failed to deserialize request")
 }
@@ -167,9 +174,11 @@ pub async fn write_response<T>(stream: &mut T, response: TransferResponse) -> Re
 where
     T: AsyncWrite + Unpin,
 {
+    println!("🔍 Debug: Serializing response...");
     let data = serde_cbor::to_vec(&response)
         .context("Failed to serialize response")?;
     
+    println!("🔍 Debug: Writing response ({} bytes)...", data.len());
     // Write length prefix
     let len = data.len() as u32;
     stream.write_all(&len.to_be_bytes()).await
@@ -182,6 +191,7 @@ where
     stream.flush().await
         .context("Failed to flush stream")?;
     
+    println!("🔍 Debug: Response written successfully");
     Ok(())
 }
 
@@ -190,17 +200,20 @@ pub async fn read_response<T>(stream: &mut T) -> Result<TransferResponse>
 where
     T: AsyncRead + Unpin,
 {
+    println!("🔍 Debug: Reading response length...");
     // Read length prefix
     let mut len_bytes = [0u8; 4];
     stream.read_exact(&mut len_bytes).await
         .context("Failed to read length")?;
     let len = u32::from_be_bytes(len_bytes) as usize;
     
+    println!("🔍 Debug: Reading response data ({} bytes)...", len);
     // Read data
     let mut data = vec![0u8; len];
     stream.read_exact(&mut data).await
         .context("Failed to read response")?;
     
+    println!("🔍 Debug: Deserializing response...");
     serde_cbor::from_slice(&data)
         .context("Failed to deserialize response")
 }
