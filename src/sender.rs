@@ -72,18 +72,49 @@ async fn main() -> Result<()> {
 
     println!("⏳ Waiting for network to bind...\n");
 
-    // Wait for NewListenAddr event to get actual bound addresses
+    // Wait for NewListenAddr events to get actual bound addresses
+    // We need to collect multiple addresses and filter out localhost
     let mut listen_addrs = Vec::new();
+    let mut addr_count = 0;
+    
     loop {
-        match swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { address, .. } => {
-                println!("🎧 Listening on: {}", address);
-                listen_addrs.push(address);
-                // Got at least one address, we can proceed
-                break;
+        tokio::select! {
+            event = swarm.select_next_some() => {
+                match event {
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        println!("🎧 Listening on: {}", address);
+                        
+                        // Filter out localhost addresses for the ticket
+                        let addr_str = address.to_string();
+                        if !addr_str.contains("127.0.0.1") && !addr_str.contains("::1") {
+                            listen_addrs.push(address);
+                            println!("   ✅ Added to ticket (non-localhost)");
+                        } else {
+                            println!("   ⚠️  Skipped (localhost)");
+                        }
+                        
+                        addr_count += 1;
+                        
+                        // Wait for a short time to collect all addresses
+                        // Usually we get 3-4 addresses (localhost, LAN, etc.)
+                        if addr_count >= 3 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                // Timeout after 2 seconds even if we haven't gotten 3 addresses
+                if !listen_addrs.is_empty() {
+                    break;
+                }
+            }
         }
+    }
+    
+    if listen_addrs.is_empty() {
+        anyhow::bail!("No valid listen addresses obtained (all were localhost)");
     }
 
     println!();
