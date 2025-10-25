@@ -245,7 +245,7 @@ where
     Ok(())
 }
 
-/// Receive chunks from a raw stream
+/// Receive chunks from a raw stream (old implementation - buffers all chunks in memory)
 pub async fn receive_chunks_from_stream<T>(
     stream: &mut T,
 ) -> Result<Vec<crate::protocol::FileChunk>>
@@ -278,4 +278,105 @@ where
     }
     
     Ok(chunks)
+}
+
+/// Receive and write chunks streaming - optimized to write as we receive
+/// This avoids buffering all chunks in memory before writing
+pub async fn receive_and_write_chunks_streaming<T>(
+    stream: &mut T,
+    file_list: &crate::protocol::FileList,
+) -> Result<()>
+where
+    T: AsyncRead + Unpin,
+{
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tokio::fs::File;
+    use tokio::io::AsyncWriteExt;
+    
+    // Track open file handles and chunk counts
+    let mut file_handles: HashMap<usize, File> = HashMap::new();
+    let mut chunks_received: HashMap<usize, u64> = HashMap::new();
+    let mut total_bytes_written: HashMap<usize, u64> = HashMap::new();
+    
+    loop {
+        // Try to read length prefix
+        let mut len_bytes = [0u8; 4];
+        match stream.read_exact(&mut len_bytes).await {
+            Ok(_) => {
+                let len = u32::from_be_bytes(len_bytes) as usize;
+                
+                // Read chunk data
+                let mut data = vec![0u8; len];
+                stream.read_exact(&mut data).await
+                    .context("Failed to read chunk data")?;
+                
+                let chunk: crate::protocol::FileChunk = serde_cbor::from_slice(&data)
+                    .context("Failed to deserialize chunk")?;
+                
+                let file_index = chunk.file_index;
+                
+                // Get or create file handle
+                if !file_handles.contains_key(&file_index) {
+                    if file_index >= file_list.files.len() {
+                        return Err(anyhow::anyhow!(
+                            "Invalid file_index {} (only {} files in list)",
+                            file_index,
+                            file_list.files.len()
+                        ));
+                    }
+                    
+                    let file_meta = &file_list.files[file_index];
+                    let output_path = PathBuf::from(&file_meta.name);
+                    
+                    // Create parent directories if needed
+                    if let Some(parent) = output_path.parent() {
+                        tokio::fs::create_dir_all(parent).await
+                            .context("Failed to create parent directories")?;
+                    }
+                    
+                    println!("📄 Writing: {}", file_meta.name);
+                    
+                    let file = File::create(&output_path).await
+                        .with_context(|| format!("Failed to create {}", output_path.display()))?;
+                    
+                    file_handles.insert(file_index, file);
+                    chunks_received.insert(file_index, 0);
+                    total_bytes_written.insert(file_index, 0);
+                }
+                
+                // Write chunk data immediately
+                let file = file_handles.get_mut(&file_index).unwrap();
+                file.write_all(&chunk.data).await
+                    .context("Failed to write chunk data")?;
+                
+                // Update counters
+                *chunks_received.get_mut(&file_index).unwrap() += 1;
+                *total_bytes_written.get_mut(&file_index).unwrap() += chunk.data.len() as u64;
+                
+                // Check if file is complete
+                if chunk.chunk_number + 1 == chunk.total_chunks {
+                    file.flush().await.context("Failed to flush file")?;
+                    let bytes_written = total_bytes_written[&file_index];
+                    let chunks_count = chunks_received[&file_index];
+                    println!("   ✅ Completed: {} chunks, {} bytes", chunks_count, bytes_written);
+                    
+                    // Close the file by removing it from the map
+                    file_handles.remove(&file_index);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                break; // End of stream
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    
+    // Flush and close any remaining open files
+    for (file_index, mut file) in file_handles.into_iter() {
+        file.flush().await
+            .with_context(|| format!("Failed to flush file {}", file_index))?;
+    }
+    
+    Ok(())
 }
