@@ -18,6 +18,7 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
+use tokio::io::AsyncWriteExt;
 use tokio::time;
 use uuid::Uuid;
 
@@ -236,35 +237,77 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     );
                                     println!();
 
-                                    // Write files to disk
-                                    for file_data in &response.file_list.file_data {
-                                        println!("   📄 Writing: {}", file_data.name);
-                                        
-                                        let output_path = PathBuf::from(&file_data.name);
-                                        
-                                        // Create parent directories if needed
-                                        if let Some(parent) = output_path.parent() {
-                                            let _ = tokio::fs::create_dir_all(parent).await;
+                                    // Receive all chunks from the stream
+                                    println!("� Receiving file chunks...");
+                                    match network::receive_chunks_from_stream(&mut stream).await {
+                                        Ok(chunks) => {
+                                            println!("   ✅ Received {} total chunks", chunks.len());
+                                            
+                                            // Group chunks by file and write them
+                                            for file_meta in &response.file_list.files {
+                                                let file_index = response.file_list.files
+                                                    .iter()
+                                                    .position(|f| f.name == file_meta.name)
+                                                    .unwrap();
+                                                
+                                                println!("📄 Writing: {}", file_meta.name);
+                                                
+                                                let output_path = PathBuf::from(&file_meta.name);
+                                                
+                                                // Create parent directories if needed
+                                                if let Some(parent) = output_path.parent() {
+                                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                                }
+                                                
+                                                // Get chunks for this file
+                                                let file_chunks: Vec<_> = chunks
+                                                    .iter()
+                                                    .filter(|c| c.file_index == file_index)
+                                                    .collect();
+                                                
+                                                if file_chunks.is_empty() {
+                                                    eprintln!("   ⚠️  No chunks received for {}", file_meta.name);
+                                                    continue;
+                                                }
+                                                
+                                                // Write chunks to file
+                                                match tokio::fs::File::create(&output_path).await {
+                                                    Ok(mut file) => {
+                                                        let mut total_bytes = 0u64;
+                                                        
+                                                        for chunk in file_chunks {
+                                                            if let Err(e) = file.write_all(&chunk.data).await {
+                                                                eprintln!("      ❌ Failed to write chunk: {}", e);
+                                                                break;
+                                                            }
+                                                            total_bytes += chunk.data.len() as u64;
+                                                        }
+                                                        
+                                                        if let Err(e) = file.flush().await {
+                                                            eprintln!("      ❌ Failed to flush: {}", e);
+                                                        } else {
+                                                            println!("      ✅ Wrote {} bytes to {}", 
+                                                                total_bytes,
+                                                                output_path.display()
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("      ❌ Failed to create {}: {}", 
+                                                            output_path.display(), 
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                            }
+
+                                            println!("\n✅ Transfer complete!");
+                                            println!("   Received {} file(s)\n", response.file_list.files.len());
                                         }
-                                        
-                                        match tokio::fs::write(&output_path, &file_data.data).await {
-                                            Ok(_) => {
-                                                println!("      ✅ Wrote {} bytes to {}", 
-                                                    file_data.data.len(), 
-                                                    output_path.display()
-                                                );
-                                            }
-                                            Err(e) => {
-                                                eprintln!("      ❌ Failed to write {}: {}", 
-                                                    output_path.display(), 
-                                                    e
-                                                );
-                                            }
+                                        Err(e) => {
+                                            eprintln!("❌ Failed to receive chunks: {}", e);
                                         }
                                     }
-
-                                    println!("\n✅ Transfer complete!");
-                                    println!("   Received {} file(s)\n", response.file_list.file_data.len());
                                 }
                                 Err(e) => {
                                     eprintln!("❌ Failed to read response: {}", e);

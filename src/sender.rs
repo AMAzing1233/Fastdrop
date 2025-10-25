@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     println!();
 
     // 2. Analyze files and determine protocol
-    let (protocol, mut file_list) = transfer::analyze_files(&file_paths)
+    let (protocol, file_list) = transfer::analyze_files(&file_paths)
         .await
         .context("Failed to analyze files")?;
 
@@ -51,28 +51,8 @@ async fn main() -> Result<()> {
         file_list.total_size
     );
 
-    // 2b. Read file contents
-    println!("📖 Reading file contents...");
-    for (idx, path) in file_paths.iter().enumerate() {
-        match tokio::fs::read(path).await {
-            Ok(data) => {
-                let file_data = protocol::FileData {
-                    index: idx,
-                    name: path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    data,
-                };
-                file_list.file_data.push(file_data);
-                println!("   ✓ Read {}", path.display());
-            }
-            Err(e) => {
-                eprintln!("   ✗ Failed to read {}: {}", path.display(), e);
-            }
-        }
-    }
-    println!();
+    // Note: We don't load file contents into memory anymore
+    // Files will be sent as chunks on-demand
 
     // 3. Setup libp2p swarm
     let keypair = Keypair::generate_ed25519();
@@ -193,12 +173,13 @@ async fn main() -> Result<()> {
 
     // 10. Setup stream acceptor
     let mut control = network::get_stream_control(&swarm);
-    let protocol = StreamProtocol::new(network::TRANSFER_PROTOCOL);
-    let mut incoming = control.accept(protocol)
+    let protocol_stream = StreamProtocol::new(network::TRANSFER_PROTOCOL);
+    let mut incoming = control.accept(protocol_stream)
         .context("Failed to accept incoming streams")?;
 
-    // Clone file_list for the stream handler task
+    // Clone data for the stream handler task
     let file_list_clone = file_list.clone();
+    let file_paths_clone = file_paths.clone();
     
     // Spawn task to handle incoming streams
     tokio::spawn(async move {
@@ -206,6 +187,7 @@ async fn main() -> Result<()> {
             println!("📨 Received stream from {}", peer);
             
             let file_list = file_list_clone.clone();
+            let file_paths = file_paths_clone.clone();
             
             tokio::spawn(async move {
                 // Read request
@@ -217,16 +199,47 @@ async fn main() -> Result<()> {
                         if request.ready {
                             let response = TransferResponse {
                                 request_id: request.request_id,
-                                file_list,
+                                file_list: file_list.clone(),
                                 accepted: true,
                             };
                             
-                            // Send response
+                            // Send response with metadata
                             if let Err(e) = network::write_response(&mut stream, response).await {
                                 eprintln!("❌ Failed to send response: {}", e);
-                            } else {
-                                println!("✅ Sent file list to receiver");
+                                return;
                             }
+                            
+                            println!("✅ Sent file list metadata to receiver");
+                            println!("📤 Starting to send file chunks...");
+                            
+                            // Now send all files as chunks
+                            for (file_index, path) in file_paths.iter().enumerate() {
+                                println!("📄 Sending file {}/{}: {}", 
+                                    file_index + 1, 
+                                    file_paths.len(), 
+                                    path.display()
+                                );
+                                
+                                match transfer::send_file(path, file_index).await {
+                                    Ok(chunks) => {
+                                        println!("   📦 Sending {} chunks...", chunks.len());
+                                        
+                                        // Send each chunk
+                                        if let Err(e) = network::send_chunks_over_stream(&mut stream, chunks).await {
+                                            eprintln!("   ❌ Failed to send chunks: {}", e);
+                                            return;
+                                        }
+                                        
+                                        println!("   ✅ All chunks sent for file {}", file_index);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("   ❌ Failed to prepare file: {}", e);
+                                        return;
+                                    }
+                                }
+                            }
+                            
+                            println!("✅ All files sent successfully to {}", peer);
                         }
                     }
                     Err(e) => {
